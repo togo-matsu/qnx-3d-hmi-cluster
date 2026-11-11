@@ -1,0 +1,21 @@
+# Build outputs
+build/
+bin/
+*.o
+*.a
+*.so
+qnx_hmi_cluster
+qnx_udp_streamer
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+*.ninja
+.ninja_*
+cmake_install.cmake
+
+# Editor & OS files
+.DS_Store
+*.swp
+*~
+.vscode/
