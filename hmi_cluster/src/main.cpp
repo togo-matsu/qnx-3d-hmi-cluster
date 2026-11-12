@@ -6,56 +6,57 @@
 
 #pragma pack(push, 1)
 struct TelemetryPacket {
-uint32_t seq;
-float    angle;
-float    speed;
-uint32_t mode;
+    uint32_t seq;
+    float    angle;
+    float    speed;
+    uint32_t mode;
 };
 #pragma pack(pop)
 
 class MainWindow : public QMainWindow {
 public:
-explicit MainWindow(QWidget *parent = nullptr) : QMainWindow(parent) {}
+    explicit MainWindow(GLWidget *gl, QWidget *parent = nullptr)
+        : QMainWindow(parent), m_gl(gl) {}
 protected:
-void keyPressEvent(QKeyEvent *event) override {
-    if (event->key() == Qt::Key_Escape) {
-        close();
-    } else {
-        QMainWindow::keyPressEvent(event);
+    void keyPressEvent(QKeyEvent *event) override {
+        if (event->key() == Qt::Key_Escape) {
+            close();
+        } else if (event->key() == Qt::Key_R && m_gl) {
+            m_gl->resetTrajectory();
+        } else {
+            QMainWindow::keyPressEvent(event);
+        }
     }
-}
+private:
+    GLWidget *m_gl;
 };
 
 int main(int argc, char *argv[]) {
-QApplication app(argc, argv);
+    QApplication app(argc, argv);
 
-MainWindow window;
-window.setWindowTitle("QNX RTOS - Automotive 3D Cluster HMI");
+    GLWidget *glWidget = new GLWidget();
+    MainWindow window(glWidget);
+    window.setWindowTitle("QNX RTOS - Automotive 3D & Navigation Cluster HMI");
+    window.setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    window.setCentralWidget(glWidget);
 
-// ウィンドウ枠を消去して最前面に設定
-window.setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint);
+    QUdpSocket udpSocket;
+    if (udpSocket.bind(QHostAddress::AnyIPv4, 5005, QUdpSocket::ShareAddress)) {
+        QObject::connect(&udpSocket, &QUdpSocket::readyRead, [&]() {
+            while (udpSocket.hasPendingDatagrams()) {
+                QByteArray datagram;
+                datagram.resize(udpSocket.pendingDatagramSize());
+                udpSocket.readDatagram(datagram.data(), datagram.size());
 
-GLWidget *glWidget = new GLWidget(&window);
-window.setCentralWidget(glWidget);
-
-QUdpSocket udpSocket;
-if (udpSocket.bind(QHostAddress::AnyIPv4, 5005, QUdpSocket::ShareAddress)) {
-    QObject::connect(&udpSocket, &QUdpSocket::readyRead, [&]() {
-        while (udpSocket.hasPendingDatagrams()) {
-            QByteArray datagram;
-            datagram.resize(udpSocket.pendingDatagramSize());
-            udpSocket.readDatagram(datagram.data(), datagram.size());
-
-            if (datagram.size() == sizeof(TelemetryPacket)) {
-                TelemetryPacket packet;
-                memcpy(&packet, datagram.constData(), sizeof(TelemetryPacket));
-                glWidget->updateTelemetry(packet.seq, packet.angle, packet.speed, packet.mode);
+                if (datagram.size() == sizeof(TelemetryPacket)) {
+                    TelemetryPacket packet;
+                    memcpy(&packet, datagram.constData(), sizeof(TelemetryPacket));
+                    glWidget->updateTelemetry(packet.seq, packet.angle, packet.speed, packet.mode);
+                }
             }
-        }
-    });
-}
+        });
+    }
 
-// GNOME Shell 正規フルスクリーン要求
-window.showFullScreen();
-return app.exec();
+    window.showFullScreen();
+    return app.exec();
 }

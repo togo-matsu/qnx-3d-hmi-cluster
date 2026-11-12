@@ -4,5 +4,9 @@ if [ -n "$AUTH_FILE" ] && [ -f "$AUTH_FILE" ]; then
     sudo cp "$AUTH_FILE" /home/ubuntu/.Xauthority
     sudo chown ubuntu:ubuntu /home/ubuntu/.Xauthority
 fi
+
 export DISPLAY=:0
-exec ~/qnx_hmi_cluster/build/qnx_hmi_cluster
+dbus-send --session --dest=org.gnome.Shell --type=method_call /org/gnome/Shell org.gnome.Shell.Eval string:'Main.overview.hide();' 2>/dev/null || true
+
+cd "$(dirname "$0")/build"
+exec ./qnx_hmi_cluster
