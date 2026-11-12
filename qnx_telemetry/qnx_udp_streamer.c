@@ -3,59 +3,102 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <fcntl.h>
+#include <math.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define TARGET_IP "10.0.0.155"
-#define TARGET_PORT 5005
+#define HMI_TARGET_IP   "10.0.0.155"
+#define HMI_TARGET_PORT 5005
+#define EDGE_LISTEN_PORT 5006
 
 #pragma pack(push, 1)
+// Raspi 5 から受信する実機センサー＋CAN パケット (16 bytes)
+typedef struct {
+    float    angle;      // Nano 33 姿勢角 (0.0 - 360.0 deg)
+    float    speed;      // CAN ID 0x0D0 車速 (km/h)
+    float    rpm;        // CAN ID 0x0C0 エンジン回転数 (RPM)
+    uint32_t mode;       // 0: Normal, 1: Warning, 2: Emergency
+} EdgeInputPacket;
+
+// Ubuntu 3D HMI へ送信する 60Hz パケット (16 bytes)
 typedef struct {
     uint32_t seq;
     float    angle;
     float    speed;
-    uint32_t mode; // 0: Normal, 1: Warning, 2: Emergency Stop
-} TelemetryData;
+    uint32_t mode;
+} HmiTelemetryPacket;
 #pragma pack(pop)
 
 int main(void) {
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sock < 0) { perror("socket"); return 1; }
+    // 1. Ubuntu HMI への送信ソケット
+    int tx_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in hmi_addr;
+    memset(&hmi_addr, 0, sizeof(hmi_addr));
+    hmi_addr.sin_family = AF_INET;
+    hmi_addr.sin_port = htons(HMI_TARGET_PORT);
+    inet_pton(AF_INET, HMI_TARGET_IP, &hmi_addr.sin_addr);
 
-    struct sockaddr_in target_addr;
-    memset(&target_addr, 0, sizeof(target_addr));
-    target_addr.sin_family = AF_INET;
-    target_addr.sin_port = htons(TARGET_PORT);
-    inet_pton(AF_INET, TARGET_IP, &target_addr.sin_addr);
+    // 2. Raspi 5 からの受信ソケット (非ブロッキング)
+    int rx_sock = socket(AF_INET, SOCK_DGRAM, 0);
+    struct sockaddr_in listen_addr;
+    memset(&listen_addr, 0, sizeof(listen_addr));
+    listen_addr.sin_family = AF_INET;
+    listen_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    listen_addr.sin_port = htons(EDGE_LISTEN_PORT);
+    bind(rx_sock, (struct sockaddr *)&listen_addr, sizeof(listen_addr));
 
-    TelemetryData data = {0, 0.0f, 60.0f, 0};
-    struct timespec ts = {0, 16666667}; // 16.66ms (60Hz)
+    int flags = fcntl(rx_sock, F_GETFL, 0);
+    fcntl(rx_sock, F_SETFL, flags | O_NONBLOCK);
 
-    printf("Starting Dynamic 60Hz Telemetry Streamer to %s:%d...\n", TARGET_IP, TARGET_PORT);
+    HmiTelemetryPacket out = {0, 0.0f, 0.0f, 0};
+    EdgeInputPacket latest_in = {0.0f, 0.0f, 0.0f, 0};
+    float smooth_angle = 0.0f;
+    float smooth_speed = 0.0f;
+    uint32_t timeout_frames = 0;
+
+    struct timespec ts = {0, 16666667}; // 60Hz (16.66ms)
+    printf("[QNX HIL Router] Listening Edge on UDP:%d -> Streaming 60Hz to %s:%d\n",
+           EDGE_LISTEN_PORT, HMI_TARGET_IP, HMI_TARGET_PORT);
 
     while (1) {
-        data.seq++;
-        data.angle += 1.0f;
-        if (data.angle >= 360.0f) data.angle -= 360.0f;
+        out.seq++;
+        int received = 0;
+        EdgeInputPacket temp_in;
 
-        // 300フレーム (約5秒) ごとにモードと速度を変動
-        uint32_t cycle = (data.seq / 300) % 3;
-        if (cycle == 0) {
-            data.mode = 0;      // Normal
-            data.speed = 60.0f;
-        } else if (cycle == 1) {
-            data.mode = 1;      // Warning
-            data.speed = 85.5f;
-        } else {
-            data.mode = 2;      // Emergency Stop
-            data.speed = 0.0f;
+        // 最新のエッジパケットをすべて読み出し
+        while (recvfrom(rx_sock, &temp_in, sizeof(temp_in), 0, NULL, NULL) == sizeof(temp_in)) {
+            latest_in = temp_in;
+            received = 1;
         }
 
-        sendto(sock, &data, sizeof(data), 0, (struct sockaddr *)&target_addr, sizeof(target_addr));
+        if (received) {
+            timeout_frames = 0;
+        } else {
+            timeout_frames++;
+        }
+
+        // 角度の最短経路補間 (BLE の 20Hz 更新を 60Hz に滑らかに補間)
+        float diff = latest_in.angle - smooth_angle;
+        if (diff > 180.0f) diff -= 360.0f;
+        if (diff < -180.0f) diff += 360.0f;
+        smooth_angle += diff * 0.25f;
+        if (smooth_angle >= 360.0f) smooth_angle -= 360.0f;
+        if (smooth_angle < 0.0f) smooth_angle += 360.0f;
+
+        // 速度の一次遅れ補間
+        smooth_speed += (latest_in.speed - smooth_speed) * 0.2f;
+
+        out.angle = smooth_angle;
+        out.speed = smooth_speed;
+        out.mode  = latest_in.mode;
+
+        sendto(tx_sock, &out, sizeof(out), 0, (struct sockaddr *)&hmi_addr, sizeof(hmi_addr));
         nanosleep(&ts, NULL);
     }
 
-    close(sock);
+    close(rx_sock);
+    close(tx_sock);
     return 0;
 }
