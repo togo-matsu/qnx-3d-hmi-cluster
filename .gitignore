@@ -4,6 +4,7 @@ bin/
 *.o
 *.a
 *.so
+*.bin
 qnx_hmi_cluster
 qnx_udp_streamer
 
@@ -14,10 +15,18 @@ CMakeCache.txt
 .ninja_*
 cmake_install.cmake
 
+# ROS 2 build artifacts
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+
 # Editor & OS files
 .DS_Store
 *.swp
 *~
 .vscode/
-__pycache__/
-*.bin
