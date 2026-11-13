@@ -2,6 +2,9 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QKeyEvent>
+#include <QFile>
+#include <QTextStream>
+#include <QStringList>
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
@@ -49,7 +52,7 @@ GLWidget::GLWidget(QWidget *parent)
     frameTimer->start(16); // 60 FPS
     dtTimer.start();
 
-    trajectoryPoints.push_back(QPointF(0.0, 0.0));
+    loadTrajectoryHistory();
 }
 
 GLWidget::~GLWidget() {
@@ -73,6 +76,52 @@ void GLWidget::resetTrajectory() {
     totalDistM = 0.0;
     trajectoryPoints.clear();
     trajectoryPoints.push_back(QPointF(0.0, 0.0));
+    update();
+}
+
+void GLWidget::loadTrajectoryHistory(const QString &csvPath) {
+    std::deque<QPointF> loaded;
+    QFile file(csvPath);
+    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream in(&file);
+        while (!in.atEnd()) {
+            const QString line = in.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith("odom_x")) {
+                continue;
+            }
+            const QStringList parts = line.split(',');
+            if (parts.size() < 2) {
+                continue;
+            }
+            bool okX = false;
+            bool okY = false;
+            const double x = parts[0].trimmed().toDouble(&okX);
+            const double y = parts[1].trimmed().toDouble(&okY);
+            if (okX && okY) {
+                loaded.push_back(QPointF(x, y));
+                if (loaded.size() > MAX_TRAIL_POINTS) {
+                    loaded.pop_front();
+                }
+            }
+        }
+    }
+
+    if (!loaded.empty()) {
+        trajectoryPoints = std::move(loaded);
+        odomX = trajectoryPoints.back().x();
+        odomY = trajectoryPoints.back().y();
+        totalDistM = 0.0;
+        for (size_t i = 1; i < trajectoryPoints.size(); ++i) {
+            totalDistM += std::hypot(trajectoryPoints[i].x() - trajectoryPoints[i - 1].x(),
+                                     trajectoryPoints[i].y() - trajectoryPoints[i - 1].y());
+        }
+    } else {
+        odomX = 0.0;
+        odomY = 0.0;
+        totalDistM = 0.0;
+        trajectoryPoints.clear();
+        trajectoryPoints.push_back(QPointF(0.0, 0.0));
+    }
     update();
 }
 
@@ -241,6 +290,8 @@ void GLWidget::resizeGL(int w, int h) {
 void GLWidget::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_R) {
         resetTrajectory();
+    } else if (event->key() == Qt::Key_L) {
+        loadTrajectoryHistory();
     }
     QOpenGLWidget::keyPressEvent(event);
 }

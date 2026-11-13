@@ -24,6 +24,7 @@ public:
 
     void updateTelemetry(uint32_t seq, float angle, float speed, uint32_t mode);
     void resetTrajectory();
+    void loadTrajectoryHistory(const QString &csvPath = "/tmp/odom_history.csv");
 
 protected:
     void initializeGL() override;

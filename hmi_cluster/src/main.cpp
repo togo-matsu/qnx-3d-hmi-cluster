@@ -23,6 +23,8 @@ protected:
             close();
         } else if (event->key() == Qt::Key_R && m_gl) {
             m_gl->resetTrajectory();
+        } else if (event->key() == Qt::Key_L && m_gl) {
+            m_gl->loadTrajectoryHistory();
         } else {
             QMainWindow::keyPressEvent(event);
         }

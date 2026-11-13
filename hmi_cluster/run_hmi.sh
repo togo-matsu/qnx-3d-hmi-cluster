@@ -9,4 +9,5 @@ export DISPLAY=:0
 dbus-send --session --dest=org.gnome.Shell --type=method_call /org/gnome/Shell org.gnome.Shell.Eval string:'Main.overview.hide();' 2>/dev/null || true
 
 cd "$(dirname "$0")/build"
+python3 ../fetch_db_history.py || true
 exec ./qnx_hmi_cluster
