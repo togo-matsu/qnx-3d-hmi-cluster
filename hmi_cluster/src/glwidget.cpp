@@ -70,6 +70,30 @@ void GLWidget::updateTelemetry(uint32_t seq, float angle, float speed, uint32_t 
     currentRpm   = 800.0f + currentSpeed * 32.0f;
 }
 
+void GLWidget::updateOdom(double x, double y) {
+    odomX = x;
+    odomY = y;
+
+    QPointF newPt(odomX, odomY);
+    if (trajectoryPoints.empty()) {
+        trajectoryPoints.push_back(newPt);
+    } else {
+        const double dist = std::hypot(newPt.x() - trajectoryPoints.back().x(),
+                                       newPt.y() - trajectoryPoints.back().y());
+        if (dist >= 0.02) {
+            totalDistM += dist;
+            trajectoryPoints.push_back(newPt);
+            if (trajectoryPoints.size() > MAX_TRAIL_POINTS) {
+                trajectoryPoints.pop_front();
+            }
+        }
+    }
+
+    odomSyncTimer.restart();
+    hasOdomSync = true;
+    update();
+}
+
 void GLWidget::resetTrajectory() {
     odomX = 0.0;
     odomY = 0.0;
@@ -301,7 +325,8 @@ void GLWidget::onFrameTick() {
     dtTimer.restart();
     double dt = double(elapsedNs) / 1e9;
 
-    if (dt > 0.0 && dt < 0.5 && currentSpeed > 0.05f) {
+    const bool odomSyncActive = hasOdomSync && (odomSyncTimer.elapsed() < 1000);
+    if (!odomSyncActive && dt > 0.0 && dt < 0.5 && currentSpeed > 0.05f) {
         double v_ms = double(currentSpeed) / 3.6;
         double yawRad = qDegreesToRadians(double(currentAngle));
         double dx = v_ms * std::cos(yawRad) * dt;

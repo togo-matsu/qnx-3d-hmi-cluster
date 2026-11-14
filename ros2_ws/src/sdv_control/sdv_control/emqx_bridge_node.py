@@ -1,5 +1,6 @@
 import json
 import math
+import socket
 import time
 import paho.mqtt.client as mqtt
 import rclpy
@@ -31,7 +32,14 @@ class Ros2EmqxBridgeNode(Node):
         self.rms_g = 1.0
         self.adas_status = "NORMAL"
 
-        self.create_subscription(Odometry, '/vehicle/odom', self.odom_cb, 10)
+        self.declare_parameter('odom_topic', '/vehicle/odom')
+        odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
+
+        self.udp_target = ('127.0.0.1', 5009)
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.udp_sock.setblocking(False)
+
+        self.create_subscription(Odometry, odom_topic, self.odom_cb, 10)
         self.create_subscription(Float32, '/vehicle/rpm', self.rpm_cb, 10)
         self.create_subscription(Float32, '/vehicle/Vibration_rms', self.rms_cb, 10)
         self.create_subscription(String, '/adas/status', self.status_cb, 10)
@@ -41,11 +49,23 @@ class Ros2EmqxBridgeNode(Node):
     def odom_cb(self, msg: Odometry):
         self.odom_x = msg.pose.pose.position.x
         self.odom_y = msg.pose.pose.position.y
+        qx = msg.pose.pose.orientation.x
+        qy = msg.pose.pose.orientation.y
         qz = msg.pose.pose.orientation.z
         qw = msg.pose.pose.orientation.w
-        yaw_rad = 2.0 * math.atan2(qz, qw)
+        yaw_rad = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
         self.yaw_deg = (math.degrees(yaw_rad) + 360.0) % 360.0
         self.speed_kmh = msg.twist.twist.linear.x * 3.6
+
+        udp_payload = json.dumps({
+            "x": round(self.odom_x, 4),
+            "y": round(self.odom_y, 4),
+            "yaw_deg": round(self.yaw_deg, 2),
+        }) + "\n"
+        try:
+            self.udp_sock.sendto(udp_payload.encode('utf-8'), self.udp_target)
+        except (BlockingIOError, OSError):
+            pass
 
     def rpm_cb(self, msg: Float32):
         self.rpm = msg.data

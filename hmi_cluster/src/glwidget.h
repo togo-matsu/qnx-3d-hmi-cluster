@@ -23,6 +23,7 @@ public:
     ~GLWidget() override;
 
     void updateTelemetry(uint32_t seq, float angle, float speed, uint32_t mode);
+    void updateOdom(double x, double y);
     void resetTrajectory();
     void loadTrajectoryHistory(const QString &csvPath = "/tmp/odom_history.csv");
 
@@ -47,6 +48,8 @@ private:
 
     QTimer *frameTimer;
     QElapsedTimer dtTimer;
+    QElapsedTimer odomSyncTimer;
+    bool hasOdomSync = false;
 
     // OpenGL シェーダー & バッファ
     QOpenGLShaderProgram m_program;

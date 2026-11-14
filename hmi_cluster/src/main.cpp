@@ -1,6 +1,9 @@
 #include <QApplication>
 #include <QMainWindow>
 #include <QUdpSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QKeyEvent>
 #include "glwidget.h"
 
@@ -54,6 +57,27 @@ int main(int argc, char *argv[]) {
                     TelemetryPacket packet;
                     memcpy(&packet, datagram.constData(), sizeof(TelemetryPacket));
                     glWidget->updateTelemetry(packet.seq, packet.angle, packet.speed, packet.mode);
+                }
+            }
+        });
+    }
+
+    QUdpSocket odomSocket;
+    if (odomSocket.bind(QHostAddress::LocalHost, 5009, QUdpSocket::ShareAddress)) {
+        QObject::connect(&odomSocket, &QUdpSocket::readyRead, [&]() {
+            while (odomSocket.hasPendingDatagrams()) {
+                QByteArray datagram;
+                datagram.resize(odomSocket.pendingDatagramSize());
+                odomSocket.readDatagram(datagram.data(), datagram.size());
+
+                QJsonParseError parseError;
+                QJsonDocument doc = QJsonDocument::fromJson(datagram, &parseError);
+                if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+                    QJsonObject obj = doc.object();
+                    if (obj.contains("x") && obj.contains("y") &&
+                        obj["x"].isDouble() && obj["y"].isDouble()) {
+                        glWidget->updateOdom(obj["x"].toDouble(), obj["y"].toDouble());
+                    }
                 }
             }
         });
