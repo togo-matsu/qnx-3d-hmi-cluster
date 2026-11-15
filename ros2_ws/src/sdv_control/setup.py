@@ -24,6 +24,7 @@ setup(
             'telemetry_node = sdv_control.telemetry_node:main',
             'adas_safety_node = sdv_control.adas_safety_node:main',
             'emqx_bridge_node = sdv_control.emqx_bridge_node:main',
+            'sim_qnx_bridge_node = sdv_control.sim_qnx_bridge_node:main',
         ],
     },
 )
