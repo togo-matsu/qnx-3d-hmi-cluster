@@ -1,4 +1,5 @@
 import asyncio
+import json
 import struct
 import socket
 import serial
@@ -12,9 +13,11 @@ DEVICE_MAC     = "48:91:4D:98:5A:FE"
 CHAR_TELEMETRY = "19B10001-E8F2-537E-4F6C-D104768A1214"
 
 # 配信先1: QNX 8.0 RTOS (リアルタイム 60Hz 描画ルート)
-QNX_TARGET  = ("10.0.0.169", 5006)
+QNX_TARGET      = ("10.0.0.169", 5006)
 # 配信先2: Ubuntu ROS 2 Humble (自律制御・TF2 オドメトリ・K8s 連携ルート)
-ROS2_TARGET = ("10.0.0.155", 5007)
+ROS2_TARGET     = ("10.0.0.155", 5007)
+# 配信先3: Ubuntu ROS 2 Humble (3x3 ターゲット選択 & Nav2 発進トリガー)
+ROS2_NAV_TARGET = ("10.0.0.155", 5010)
 
 udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
@@ -25,11 +28,26 @@ state = {
     "speed": 0.0,
     "rpm":   800.0,
     "mode":  0,
+    "target": "P5",
     "stm32_connected": False
 }
 
+_last_go_time = 0.0
+
+def send_nav_event(target: str, go: bool = False):
+    """Ubuntu ROS 2 (UDP 5010) へターゲット選択・発進トリガーを JSON 送信"""
+    try:
+        payload = json.dumps({"target": target, "go": go}).encode("utf-8")
+        udp_sock.sendto(payload, ROS2_NAV_TARGET)
+    except Exception:
+        pass
+
 def stm32_can_worker():
     """ST-LINK 固有パスから STM32 の疑似 CAN フレームを受信"""
+    global _last_go_time
+    prev_speed = 0.0
+    prev_accelerating = False
+
     while True:
         ports = glob.glob("/dev/serial/by-id/*STMicroelectronics*")
         if not ports:
@@ -46,7 +64,18 @@ def stm32_can_worker():
                         parts = line.split()
                         if len(parts) >= 4:
                             raw = (int(parts[2], 16) << 8) | int(parts[3], 16)
-                            state["speed"] = raw / 100.0
+                            new_speed = raw / 100.0
+                            state["speed"] = new_speed
+
+                            # 青ボタン(PC13)押下時は車速が +2.2km/h ずつ増加する特性からエッジ検出
+                            is_accelerating = (new_speed - prev_speed) > 0.5
+                            if is_accelerating and not prev_accelerating:
+                                now = time.monotonic()
+                                if now - _last_go_time >= 0.5:
+                                    _last_go_time = now
+                                    send_nav_event(state["target"], go=True)
+                            prev_accelerating = is_accelerating
+                            prev_speed = new_speed
                     elif line.startswith("CAN 0x0C0"):
                         parts = line.split()
                         if len(parts) >= 4:
@@ -54,6 +83,7 @@ def stm32_can_worker():
                             state["rpm"] = float(raw)
         except Exception:
             state["stm32_connected"] = False
+            prev_accelerating = False
             time.sleep(2.0)
 
 threading.Thread(target=stm32_can_worker, daemon=True).start()
@@ -65,6 +95,13 @@ def ble_notification_handler(sender, data: bytearray):
         state["pitch"] = pitch
         state["rms"]   = rms
         state["mode"]  = mode
+    if len(data) >= 18:
+        target_id = data[17]
+        if 1 <= target_id <= 9:
+            new_target = f"P{target_id}"
+            if new_target != state["target"]:
+                state["target"] = new_target
+                send_nav_event(new_target, go=False)
 
 async def dual_streamer_loop():
     """QNX (16 bytes) と ROS 2 (24 bytes) へ 50Hz 周期で同時送信"""
