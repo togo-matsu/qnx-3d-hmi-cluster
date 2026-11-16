@@ -1,12 +1,14 @@
+import json
 import math
 import socket
 import struct
+import time
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import TwistStamped, TransformStamped
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, String
 from tf2_ros import TransformBroadcaster
 
 class SdvTelemetryNode(Node):
@@ -17,11 +19,19 @@ class SdvTelemetryNode(Node):
         self.odom_pub  = self.create_publisher(Odometry, '/vehicle/odom', 10)
         self.rpm_pub   = self.create_publisher(Float32, '/vehicle/rpm', 10)
         self.rms_pub   = self.create_publisher(Float32, '/vehicle/Vibration_rms', 10)
+        self.nav_target_pub = self.create_publisher(String, '/nav/select_target', 10)
+        self.nav_go_pub     = self.create_publisher(String, '/nav/execute_go', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(('0.0.0.0', 5007))
         self.sock.setblocking(False)
+
+        self.nav_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.nav_sock.bind(('0.0.0.0', 5010))
+        self.nav_sock.setblocking(False)
+        self.last_target = None
+        self.last_go_time = 0.0
 
         # 2D オドメトリ積分状態 (x, y [m])
         self.x = 0.0
@@ -31,7 +41,31 @@ class SdvTelemetryNode(Node):
         self.create_timer(0.02, self.timer_callback) # 50Hz
         self.get_logger().info('SDV Telemetry & TF2 Odometry Node started on UDP:5007')
 
+    def _poll_nav_events(self):
+        while True:
+            try:
+                data, _ = self.nav_sock.recvfrom(256)
+                payload = json.loads(data.decode('utf-8', errors='ignore'))
+                target = payload.get('target')
+                if isinstance(target, str) and target.startswith('P') and target != self.last_target:
+                    self.last_target = target
+                    msg = String()
+                    msg.data = target
+                    self.nav_target_pub.publish(msg)
+                if payload.get('go') is True:
+                    now_sec = time.monotonic()
+                    if now_sec - self.last_go_time >= 0.5:
+                        self.last_go_time = now_sec
+                        go_msg = String()
+                        go_msg.data = self.last_target or (target if isinstance(target, str) else 'P5')
+                        self.nav_go_pub.publish(go_msg)
+            except BlockingIOError:
+                break
+            except Exception:
+                pass
+
     def timer_callback(self):
+        self._poll_nav_events()
         latest_data = None
         while True:
             try:

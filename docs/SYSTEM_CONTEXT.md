@@ -2,12 +2,17 @@
 
 ## 1. ノード・ネットワーク・VM 構成
 - **Proxmox Host**: `192.168.0.150` (`devuser` / 作業リポジトリ: `~/qnx-3d-hmi-cluster`)
+- **Edge Gateway (Raspberry Pi 5 8GB: `raspi5`)**: `192.168.0.12` (`you` / Raspberry Pi OS ARM64 / 作業ディレクトリ: `~/qnx-3d-hmi-cluster/edge_gateway` および `~/iot-gateway`)
+  - **Arduino Nano 33 BLE Sense Rev2**: BLE GATT サーバー（MAC: `48:91:4D:98:5A:FE`、FQBN: `arduino:mbed_nano:nano33ble`）。内蔵 `BMI270`（9軸IMU）および `APDS-9960`（光学ジェスチャー）で車体姿勢・3×3 ターゲット選択を送信。
+  - **STM32 Nucleo-F446RE**: USB-UART 接続（固有パス: `/dev/serial/by-id/*STMicroelectronics*`, `115200bps`、FQBN: `STMicroelectronics:stm32:Nucleo_64:pnum=NUCLEO_F446RE`）。青色 USER ボタン（`PC13`）で疑似 CAN 車速・RPM およびナビ発進トリガーを送信。
+  - **通信経路**: OPNsense 経由で QNX（`10.0.0.169:5006`）と Ubuntu ROS 2（`10.0.0.155:5007`）へデュアル UDP 配信。
 - **QNX 8.0 Safety Island (VM 210: `qnx8-vm`)**: `10.0.0.169`
   - UDP `5006`: Edge（Raspi 5）および ROS 2 シミュレーション中継（`sim_qnx_bridge_node`）からのセンサー/指令入力受信
   - UDP `5008`: ROS 2 ADAS ノードからの介入指令受信
   - UDP `5005`: Ubuntu HMI へ 60Hz テレメトリ送信（16バイト `TelemetryPacket`）
 - **Ubuntu GPU HMI & ROS 2 (VM 220: `ubuntu-gpu-hmi`)**: `10.0.0.155` (RTX 4070 / X11 `:0` / ROS 2 Humble)
   - UDP `5005`: QNX 60Hz テレメトリ受信ポート
+  - UDP `5007`: Raspi 5 エッジブリッジからの実機センサー・ジェスチャー・ボタンイベント受信ポート
   - UDP `5009` (ローカル `127.0.0.1`): ROS 2 オドメトリ（`/vehicle/odom` または `/odom`）リアルタイム同期ポート（実装・検証済）
 - **Kubernetes Cluster (VM 300: `k8s-node-01`)**: `10.0.0.100`
   - EMQX MQTT Broker VIP: `10.0.0.201:1883`（トピック: `devices/sdv-ros2/telemetry`）
@@ -24,6 +29,7 @@
 3. **ROS 2 Humble (`ros2_ws/src/sdv_control`) & シミュレーション連携 (実装・検証済)**
    - `emqx_bridge_node.py`: `odom_topic`（デフォルト `'/vehicle/odom'`、Gazebo/Nav2 連携時は `'/odom'`）を購読し、受信のたびに `127.0.0.1:5009` へ JSON (`{"x": ..., "y": ..., "yaw_deg": ...}`) をノンブロッキング UDP 送信する。K8s 稼働時は同座標を 5Hz で EMQX (`10.0.0.201:1883`) へ送信する。
    - `sim_qnx_bridge_node.py`: Gazebo / Nav2 の `/cmd_vel` (`geometry_msgs/msg/Twist`) と `/odom` (`nav_msgs/msg/Odometry`) を購読し、車速（`speed_scale` 倍率適用、デフォルト `150.0`）・車体ヨー角・疑似 RPM を 50Hz で `10.0.0.169:5006` へ UDP 送信する。
+   - `pillar_nav_node.py`: `turtlebot3_world` の 9 本の柱（`P1`〜`P9`）とヘキサ 6 頂点（`H1`〜`H6`）の安全停止座標を保持。`/nav/select_target` (`std_msgs/msg/String`) でターゲット選択、`/nav/execute_go` (`std_msgs/msg/String`) で Nav2 (`/navigate_to_pose`) へゴール送信し、連続・交互移動を実行する。
 4. **Gazebo & Nav2 シミュレーション構成 (STEP 1 / STEP 2 検証済)**
    - `TURTLEBOT3_MODEL=waffle` を使用し、`turtlebot3_gazebo/turtlebot3_world.launch.py` と `nav2_bringup/bringup_launch.py` (`use_sim_time:=True`) を分離起動して `odom` TF と `/navigate_to_pose` による自律走行を実行する。
 5. **Qt6 / OpenGL HMI (`hmi_cluster`) 軌跡復元 ＆ リアルタイム同期 (実装済)**
