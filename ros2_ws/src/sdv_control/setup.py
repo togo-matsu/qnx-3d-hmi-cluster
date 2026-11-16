@@ -25,6 +25,7 @@ setup(
             'adas_safety_node = sdv_control.adas_safety_node:main',
             'emqx_bridge_node = sdv_control.emqx_bridge_node:main',
             'sim_qnx_bridge_node = sdv_control.sim_qnx_bridge_node:main',
+            'pillar_nav_node = sdv_control.pillar_nav_node:main',
         ],
     },
 )
