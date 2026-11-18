@@ -1,0 +1,36 @@
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Float32MultiArray
+
+
+class DroneOffboardCommander(Node):
+    def __init__(self):
+        super().__init__('drone_offboard_commander')
+        self.declare_parameter('roll_deg', 15.0)
+        self.declare_parameter('pitch_deg', 0.0)
+        self.declare_parameter('thrust', 0.55)
+
+        self.pub = self.create_publisher(Float32MultiArray, '/drone/offboard_setpoint', 10)
+        self.create_timer(0.05, self.timer_cb)  # 20Hz (PX4 Offboard 要件 >= 2Hz)
+        self.get_logger().info(
+            f"Streaming 20Hz Offboard Setpoint: Roll={self.get_parameter('roll_deg').value} deg, "
+            f"Pitch={self.get_parameter('pitch_deg').value} deg, Thrust={self.get_parameter('thrust').value}"
+        )
+
+    def timer_cb(self):
+        r = float(self.get_parameter('roll_deg').value)
+        p = float(self.get_parameter('pitch_deg').value)
+        t = float(self.get_parameter('thrust').value)
+        self.pub.publish(Float32MultiArray(data=[r, p, t]))
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = DroneOffboardCommander()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
