@@ -1,4 +1,5 @@
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
@@ -11,7 +12,7 @@ class DroneOffboardCommander(Node):
         self.declare_parameter('thrust', 0.55)
 
         self.pub = self.create_publisher(Float32MultiArray, '/drone/offboard_setpoint', 10)
-        self.create_timer(0.05, self.timer_cb)  # 20Hz (PX4 Offboard 要件 >= 2Hz)
+        self.create_timer(0.05, self.timer_cb)  # 20Hz
         self.get_logger().info(
             f"Streaming 20Hz Offboard Setpoint: Roll={self.get_parameter('roll_deg').value} deg, "
             f"Pitch={self.get_parameter('pitch_deg').value} deg, Thrust={self.get_parameter('thrust').value}"
@@ -29,8 +30,9 @@ def main(args=None):
     node = DroneOffboardCommander()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
