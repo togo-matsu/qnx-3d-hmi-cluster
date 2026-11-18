@@ -12,11 +12,11 @@ def euler_deg_to_quat(r_deg, p_deg, y_deg):
 class DroneMavlinkRos2Node(Node):
     def __init__(self):
         super().__init__('drone_mavlink_ros2_node')
-        self.mav = mavutil.mavlink_connection('udpin:0.0.0.0:14550')
+        self.mav_rx  = mavutil.mavlink_connection('udpin:0.0.0.0:14550')
+        self.mav_tx  = mavutil.mavlink_connection('udpout:192.168.0.12:14552', source_system=255, source_component=0)
         self.qgc_out = mavutil.mavlink_connection('udpout:127.0.0.1:14551', source_system=1, source_component=1)
         self.qnx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.qnx_addr = ('10.0.0.169', 5006)
-        self.peer_logged = False
 
         self.pub_armed = self.create_publisher(Bool, '/drone/armed', 10)
         self.pub_att   = self.create_publisher(Float32MultiArray, '/drone/attitude_deg', 10)
@@ -30,46 +30,37 @@ class DroneMavlinkRos2Node(Node):
         self.roll = self.pitch = self.yaw = self.alt = self.throttle = 0.0
         self.start_time = self.get_clock().now().nanoseconds * 1e-9
         self.create_timer(0.01, self.poll_mavlink)
-        self.get_logger().info('Bidirectional Drone MAVLink-ROS2 Node listening on UDP:14550')
+        self.get_logger().info('Drone MAVLink-ROS2 Node ready: RX<-14550 | TX->192.168.0.12:14552')
 
     def _boot_ms(self):
         return int(((self.get_clock().now().nanoseconds * 1e-9) - self.start_time) * 1000) & 0xFFFFFFFF
 
     def offboard_cb(self, msg):
-        if getattr(self.mav, 'last_addr', None) is None or len(msg.data) < 3:
+        if len(msg.data) < 3:
             return
         q = euler_deg_to_quat(float(msg.data[0]), float(msg.data[1]), 0.0)
         thrust = max(0.0, min(1.0, float(msg.data[2])))
-        self.mav.mav.set_attitude_target_send(self._boot_ms(), 1, 1, 0b00000111, q, 0.0, 0.0, 0.0, thrust)
+        self.mav_tx.mav.set_attitude_target_send(self._boot_ms(), 1, 1, 0b00000111, q, 0.0, 0.0, 0.0, thrust)
 
     def arm_cb(self, msg):
-        addr = getattr(self.mav, 'last_addr', None)
-        if addr is None:
-            self.get_logger().warn('Cannot send ARM: no packet received from Raspi5 yet')
-            return
         val = 1.0 if msg.data else 0.0
-        self.mav.mav.command_long_send(1, 1, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, val, 0, 0, 0, 0, 0, 0)
-        self.get_logger().info(f'Sent MAVLink ARM={msg.data} -> {addr}')
+        self.mav_tx.mav.command_long_send(1, 1, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0, val, 0, 0, 0, 0, 0, 0)
+        self.get_logger().info(f'Sent MAVLink ARM={msg.data} -> 192.168.0.12:14552')
 
     def estop_cb(self, msg):
-        addr = getattr(self.mav, 'last_addr', None)
-        if not msg.data or addr is None:
+        if not msg.data:
             return
-        self.mav.mav.command_long_send(1, 1, mavutil.mavlink.MAV_CMD_DO_FLIGHTTERMINATION, 0, 1.0, 0, 0, 0, 0, 0, 0)
-        self.get_logger().warn(f'Sent MAVLink E-STOP -> {addr}')
+        self.mav_tx.mav.command_long_send(1, 1, mavutil.mavlink.MAV_CMD_DO_FLIGHTTERMINATION, 0, 1.0, 0, 0, 0, 0, 0, 0)
+        self.get_logger().warn('Sent MAVLink E-STOP -> 192.168.0.12:14552')
 
     def poll_mavlink(self):
         while True:
-            msg = self.mav.recv_match(blocking=False)
+            msg = self.mav_rx.recv_match(blocking=False)
             if msg is None:
                 break
             mtype = msg.get_type()
             if mtype == 'BAD_DATA':
                 continue
-            if not self.peer_logged and getattr(self.mav, 'last_addr', None):
-                self.peer_logged = True
-                self.get_logger().info(f'Linked with Raspi5 MAVLink peer at {self.mav.last_addr}')
-
             if mtype == 'HEARTBEAT':
                 self.armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                 self.pub_armed.publish(Bool(data=self.armed))
