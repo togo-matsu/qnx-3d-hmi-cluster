@@ -25,6 +25,7 @@ setup(
             'adas_safety_node = sdv_control.adas_safety_node:main',
             'emqx_bridge_node = sdv_control.emqx_bridge_node:main',
             'stereo_depth_fusion_node = sdv_control.stereo_depth_fusion_node:main',
+            'stereo_avoidance_node = sdv_control.stereo_avoidance_node:main',
             'drone_offboard_commander = sdv_control.drone_offboard_commander:main',
             'drone_mavlink_ros2_node = sdv_control.drone_mavlink_ros2_node:main',
             'sim_qnx_bridge_node = sdv_control.sim_qnx_bridge_node:main',
