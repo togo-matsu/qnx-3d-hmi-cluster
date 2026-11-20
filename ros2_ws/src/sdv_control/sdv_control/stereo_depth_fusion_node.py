@@ -7,11 +7,12 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
-from sensor_msgs.msg import Image as RosImage
+from sensor_msgs.msg import Image as RosImage, CameraInfo
 
 SYNC_MAGIC = b"\xAA\x55\xAA\x55"
 BASELINE_M = 0.060
 FOCAL_PX   = 265.0
+OPTICAL_FRAME = "camera_optical_frame"
 
 def recv_exact(conn, n):
     buf = bytearray()
@@ -27,6 +28,10 @@ class StereoDepthFusionNode(Node):
         super().__init__('stereo_depth_fusion_node')
         self.pub_zones = self.create_publisher(Float32MultiArray, '/stereo/zone_distances_m', 10)
         self.pub_debug = self.create_publisher(RosImage, '/stereo/debug_view', 10)
+        self.pub_rgb   = self.create_publisher(RosImage, '/stereo/rgb/image_raw', 10)
+        self.pub_depth = self.create_publisher(RosImage, '/stereo/depth/image_raw', 10)
+        self.pub_info  = self.create_publisher(CameraInfo, '/stereo/rgb/camera_info', 10)
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.get_logger().info(f"Loading Depth-Anything-V2-Small on {self.device}...")
         model_id = "depth-anything/Depth-Anything-V2-Small-hf"
@@ -41,7 +46,7 @@ class StereoDepthFusionNode(Node):
         self.pair_lock = threading.Lock()
         threading.Thread(target=self.tcp_server, daemon=True).start()
         self.create_timer(0.08, self.process_frame)
-        self.get_logger().info("Stereo + AI Depth Fusion Node ready! Listening TCP:5015")
+        self.get_logger().info("Stereo + AI Depth Fusion Node (RGB-D SLAM ready) Listening TCP:5015")
 
     def tcp_server(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -54,8 +59,8 @@ class StereoDepthFusionNode(Node):
             try:
                 while True:
                     hdr = recv_exact(conn, 12)
-                    if not hdr or hdr[:4] != SYNC_MAGIC:
-                        break
+                    if not hdr: break
+                    if hdr[:4] != SYNC_MAGIC: continue
                     len_l, len_r = struct.unpack("<II", hdr[4:12])
                     jl = recv_exact(conn, len_l)
                     jr = recv_exact(conn, len_r)
@@ -66,13 +71,13 @@ class StereoDepthFusionNode(Node):
                 pass
             finally:
                 conn.close()
-
     def process_frame(self):
         with self.pair_lock:
             pair = self.latest_pair
             self.latest_pair = None
         if pair is None:
             return
+
         t0 = time.time()
         img_l = cv2.imdecode(np.frombuffer(pair[0], np.uint8), cv2.IMREAD_COLOR)
         img_r = cv2.imdecode(np.frombuffer(pair[1], np.uint8), cv2.IMREAD_COLOR)
@@ -82,49 +87,60 @@ class StereoDepthFusionNode(Node):
         gray_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2GRAY)
         gray_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
         disp = self.stereo.compute(gray_l, gray_r).astype(np.float32) / 16.0
-        valid = disp > 2.0
-        stereo_m = np.zeros_like(disp)
-        stereo_m[valid] = (FOCAL_PX * BASELINE_M) / disp[valid]
+        valid_mask = disp > 2.0
+        stereo_depth_m = np.zeros_like(disp)
+        stereo_depth_m[valid_mask] = (FOCAL_PX * BASELINE_M) / disp[valid_mask]
 
         rgb_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
         inputs = self.processor(images=Image.fromarray(rgb_l), return_tensors="pt").to(self.device)
         with torch.no_grad():
             pred = self.model(**inputs).predicted_depth
-        ai_inv = torch.nn.functional.interpolate(
+        ai_inv_depth = torch.nn.functional.interpolate(
             pred.unsqueeze(1), size=img_l.shape[:2], mode="bicubic", align_corners=False
         ).squeeze().cpu().numpy()
 
-        cal = valid & (stereo_m > 0.15) & (stereo_m < 4.0)
-        ai_safe = np.maximum(ai_inv, 1e-3)
-        scale = float(np.median((1.0 / stereo_m[cal]) / ai_safe[cal])) if np.count_nonzero(cal) > 150 else 0.045
-        metric_m = np.clip(1.0 / np.maximum(ai_safe * scale, 0.1), 0.15, 6.0)
+        cal_mask = valid_mask & (stereo_depth_m > 0.15) & (stereo_depth_m < 4.0)
+        ai_inv_safe = np.maximum(ai_inv_depth, 1e-3)
+        if np.count_nonzero(cal_mask) > 150:
+            scale = float(np.median((1.0 / stereo_depth_m[cal_mask]) / ai_inv_safe[cal_mask]))
+        else:
+            scale = 0.045
+        metric_depth_m = np.clip(1.0 / np.maximum(ai_inv_safe * scale, 0.1), 0.15, 6.0).astype(np.float32)
 
-        h, w = metric_m.shape
-        roi = metric_m[int(h*0.25):int(h*0.75), :]
+        h, w = metric_depth_m.shape
+        roi = metric_depth_m[int(h*0.25):int(h*0.75), :]
         w3 = w // 3
-        d_l = float(np.percentile(roi[:, :w3], 15))
-        d_c = float(np.percentile(roi[:, w3:2*w3], 15))
-        d_r = float(np.percentile(roi[:, 2*w3:], 15))
-        c_roi_m = stereo_m[int(h*0.35):int(h*0.65), int(w*0.35):int(w*0.65)]
-        c_roi_v = valid[int(h*0.35):int(h*0.65), int(w*0.35):int(w*0.65)]
-        sgbm_c = float(np.median(c_roi_m[c_roi_v])) if np.any(c_roi_v) else -1.0
-
+        d_left   = float(np.percentile(roi[:, :w3], 15))
+        d_center = float(np.percentile(roi[:, w3:2*w3], 15))
+        d_right  = float(np.percentile(roi[:, 2*w3:], 15))
+        cm = valid_mask[int(h*0.35):int(h*0.65), int(w*0.35):int(w*0.65)]
+        sgbm_center = float(np.median(stereo_depth_m[int(h*0.35):int(h*0.65), int(w*0.35):int(w*0.65)][cm])) if np.any(cm) else -1.0
         infer_ms = (time.time() - t0) * 1000.0
-        self.pub_zones.publish(Float32MultiArray(data=[d_l, d_c, d_r, sgbm_c, infer_ms]))
+        self.pub_zones.publish(Float32MultiArray(data=[d_left, d_center, d_right, sgbm_center, infer_ms]))
 
-        vis_sgbm = cv2.applyColorMap(np.clip(disp * 4, 0, 255).astype(np.uint8), cv2.COLORMAP_JET)
-        vis_ai = cv2.applyColorMap(np.clip((1.0 / metric_m) * 80, 0, 255).astype(np.uint8), cv2.COLORMAP_INFERNO)
-        combo = np.hstack([img_l, vis_sgbm, vis_ai])
-        cv2.putText(combo, f"L:{d_l:.2f}m C:{d_c:.2f}m R:{d_r:.2f}m (SGBM:{sgbm_c:.2f}m) [{infer_ms:.1f}ms]",
-                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (0, 255, 0), 2)
-        cv2.imwrite("/tmp/stereo_fusion_latest.jpg", combo)
+        # RTAB-Map 用 RGB + Depth(32FC1, m) + CameraInfo を同一スタンプで配信
+        stamp = self.get_clock().now().to_msg()
+        rgb_msg = RosImage()
+        rgb_msg.header.stamp, rgb_msg.header.frame_id = stamp, OPTICAL_FRAME
+        rgb_msg.height, rgb_msg.width, rgb_msg.encoding, rgb_msg.step = h, w, "rgb8", w * 3
+        rgb_msg.data = rgb_l.tobytes()
+        self.pub_rgb.publish(rgb_msg)
 
-        msg = RosImage()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.height, msg.width = combo.shape[:2]
-        msg.encoding, msg.step = "bgr8", msg.width * 3
-        msg.data = combo.tobytes()
-        self.pub_debug.publish(msg)
+        dep_msg = RosImage()
+        dep_msg.header.stamp, dep_msg.header.frame_id = stamp, OPTICAL_FRAME
+        dep_msg.height, dep_msg.width, dep_msg.encoding, dep_msg.step = h, w, "32FC1", w * 4
+        dep_msg.data = metric_depth_m.tobytes()
+        self.pub_depth.publish(dep_msg)
+
+        cx, cy = w / 2.0, h / 2.0
+        ci = CameraInfo()
+        ci.header.stamp, ci.header.frame_id = stamp, OPTICAL_FRAME
+        ci.height, ci.width, ci.distortion_model = h, w, "plumb_bob"
+        ci.d = [0.0, 0.0, 0.0, 0.0, 0.0]
+        ci.k = [FOCAL_PX, 0.0, cx, 0.0, FOCAL_PX, cy, 0.0, 0.0, 1.0]
+        ci.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        ci.p = [FOCAL_PX, 0.0, cx, 0.0, 0.0, FOCAL_PX, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+        self.pub_info.publish(ci)
 
 def main(args=None):
     rclpy.init(args=args)
