@@ -216,13 +216,19 @@ class TelloEdgeBridge:
                 self.send_tello_cmd("emergency")
                 time.sleep(0.05)
         elif cmd.startswith("rc "):
+            t = time.time()
             with self.lock:
                 if self.landing_active:
+                    if t - getattr(self, "_last_rc_log", 0.0) >= 1.0:
+                        self._last_rc_log = t
+                        print(f"[RC BLOCKED] landing_active=True ({cmd})", flush=True)
                     return
-                self.last_rc_ts = time.time()
+                self.last_rc_ts = t
                 self.hover_sent = (cmd == "rc 0 0 0 0")
+                if t - getattr(self, "_last_rc_log", 0.0) >= 1.0:
+                    self._last_rc_log = t
+                    print(f"[VM RC -> TELLO] {cmd}", flush=True)
             self.send_tello_cmd(cmd)
-
     def tcp_rx_worker(self, sock: socket.socket):
         buf = b""
         while True:
