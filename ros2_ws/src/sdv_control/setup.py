@@ -21,6 +21,8 @@ setup(
     license='MIT',
     entry_points={
         'console_scripts': [
+            'tello_qnx_arbiter_node = sdv_control.tello_qnx_arbiter_node:main',
+            'tello_vision_node = sdv_control.tello_vision_node:main',
             'tello_teleop_node = sdv_control.tello_teleop_node:main',
             'tello_ros2_node = sdv_control.tello_ros2_node:main',
             'telemetry_node = sdv_control.telemetry_node:main',

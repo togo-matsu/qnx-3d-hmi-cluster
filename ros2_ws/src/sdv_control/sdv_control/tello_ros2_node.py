@@ -9,7 +9,7 @@ from cv_bridge import CvBridge
 
 CTRL_PORT = 5020
 VIDEO_PORT = 5021
-MAX_RC_SPEED = 30  # 室内安全上限 (最大30%)
+MAX_RC_SPEED = 45  # 室内安全上限 (最大30%)
 
 class TelloRos2Node(Node):
     def __init__(self):
